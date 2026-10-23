@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # IoT-Based Poultry Feed Trolley Monitoring System Using ESP32
 
 A complete, college-level IoT project featuring an autonomous/remote poultry feed distribution trolley powered by an **ESP32 DevKit V1** microcontroller, paired with a modern, responsive web dashboard built with **HTML5, CSS3, JavaScript, and Node.js/Express.js**.
@@ -212,3 +213,6 @@ If your ESP32 hardware is not assembled yet:
 #   T R A L L Y  
  #   T R A L L Y  
  
+=======
+# TRALLY
+>>>>>>> 92279efba0458b1a98a3dab9a4ca5ee6d7b9866f
