@@ -210,4 +210,5 @@ If your ESP32 hardware is not assembled yet:
 - **Q: How is safety guaranteed over latency?**  
   *A: Collision avoidance is implemented directly in the ESP32 firmware loop (`updateSensors()`), ensuring instantaneous motor cut-off independent of Wi-Fi or USB communication delay.*
 #   T R A L L Y  
+ #   T R A L L Y  
  
