@@ -1,0 +1,62 @@
+========================================================================
+ARDUINO IDE LIBRARIES REQUIRED FOR ESP32 POULTRY FEED TROLLEY
+========================================================================
+
+Install the following libraries via Arduino IDE Library Manager
+(Sketch -> Include Library -> Manage Libraries... or Ctrl+Shift+I):
+
+1. ArduinoJson (by Benoit Blanchon)
+   - Recommended Version: 6.21.x or 7.x
+   - Purpose: Serialization and parsing of JSON payloads over Serial & HTTP.
+
+2. HX711 Arduino Library (by Bogdan Necula / bogde)
+   - Recommended Version: 0.7.5 or latest
+   - Purpose: Reading digital weight values from HX711 24-bit ADC & Load Cell.
+
+3. ESP32Servo (by Kevin Harrington)
+   - Recommended Version: 1.1.x or latest
+   - Purpose: Hardware timer PWM control for standard SG90 / MG90S / MG995 / MG996R servo motor.
+
+4. LiquidCrystal_I2C (by Frank de Brabander or Marco Schwartz)
+   - Recommended Version: 1.1.4 or latest
+   - Purpose: Real-time physical status display on 16x2 or 20x4 I2C LCD screen.
+   - Note: The firmware now features AUTO-SCANNING for I2C addresses (0x27, 0x3F, etc.).
+
+------------------------------------------------------------------------
+BUILT-IN ESP32 CORE LIBRARIES (No installation required):
+- WiFi.h (Espressif ESP32 Core)
+- WebServer.h (Espressif ESP32 Core)
+- Wire.h (Espressif ESP32 Core for I2C)
+
+------------------------------------------------------------------------
+BOARD PACKAGE:
+- esp32 by Espressif Systems
+  Install via: Tools -> Board -> Boards Manager -> search "esp32"
+  Select Board: "ESP32 Dev Module" or "DOIT ESP32 DEVKIT V1"
+
+------------------------------------------------------------------------
+HARDWARE WIRING & TROUBLESHOOTING CHECKLIST:
+1. External I2C LCD Screen (1602 / 2004 with PCF8574 backpack):
+   - VCC -> 5V (VIN of ESP32)
+   - GND -> GND
+   - SDA -> GPIO 21
+   - SCL -> GPIO 22
+   * If display is lit up with blue boxes but NO text, turn the small BLUE
+     CONTRAST POTENTIOMETER on the back of the I2C backpack with a screwdriver
+     until the letters appear crystal clear!
+
+2. Micro Servo Motor (SG90 / MG90S Feed Gate):
+   - Orange/Yellow (PWM Signal) -> GPIO 13
+   - Red (VCC)                  -> 5V (VIN)
+   - Brown/Black (GND)          -> GND
+
+3. L298N DC Motor Driver (Trolley Propulsion):
+   - IN1 -> GPIO 26
+   - IN2 -> GPIO 27
+   - IN3 -> GPIO 32
+   - IN4 -> GPIO 33
+   - ENA -> GPIO 25 (or keep jumper ON)
+   - ENB -> GPIO 14 (or keep jumper ON)
+   - L298N 12V Power Terminal   -> Battery (+) [9V to 12V DC]
+   - L298N Power GND            -> Battery (-) AND ESP32 GND (COMMON GROUND IS MANDATORY!)
+========================================================================

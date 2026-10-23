@@ -1,0 +1,569 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>POULTRY FEED TROLLEY MONITORING SYSTEM</title>
+  <meta name="description" content="IoT-Based Poultry Feed Trolley Monitoring and Control System using ESP32 with USB Serial, Web Serial, and Wi-Fi modes.">
+  <link rel="stylesheet" href="style.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="app-container">
+
+    <!-- Top Server Diagnostics Banner (shows if server is offline) -->
+    <div id="serverOfflineBanner" class="server-notice-banner hidden">
+      <div class="notice-content">
+        <svg class="notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"></circle>
+          <line x1="12" y1="8" x2="12" y2="12"></line>
+          <line x1="12" y1="16" x2="12.01" y2="16"></line>
+        </svg>
+        <div>
+          <strong>Node.js Backend Server Offline:</strong>
+          <span>Run <code class="code-badge">npm start</code> in terminal for local COM port bridge, or click <strong>Direct Web Serial</strong> to connect ESP32 directly via Chrome/Edge USB!</span>
+        </div>
+      </div>
+      <div class="notice-actions">
+        <button id="btnQuickWebSerial" class="btn btn-sm btn-primary">Connect via Direct Web Serial</button>
+        <button id="btnRetryServer" class="btn btn-sm btn-outline">Check Server</button>
+        <button class="notice-dismiss" onclick="dismissServerNotice()" title="Dismiss">&times;</button>
+      </div>
+    </div>
+
+    <!-- Header -->
+    <header class="main-header">
+      <div class="header-brand">
+        <div class="brand-icon">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="5" width="20" height="14" rx="2"></rect>
+            <path d="M2 10h20"></path>
+            <circle cx="7" cy="15" r="1.5"></circle>
+            <circle cx="17" cy="15" r="1.5"></circle>
+          </svg>
+        </div>
+        <div>
+          <h1 class="header-title">POULTRY FEED TROLLEY MONITORING SYSTEM</h1>
+          <p class="header-subtitle">IoT Autonomous Feed Dispenser &bull; ESP32 DevKit V1 Controller</p>
+        </div>
+      </div>
+
+      <div class="header-badges">
+        <!-- Server Connection Status Pill -->
+        <div id="serverStatusBadge" class="badge badge-server-checking" title="Node.js Express Server on Port 3000">
+          <span class="status-dot"></span>
+          <span id="serverStatusText">CHECKING SERVER...</span>
+        </div>
+        <!-- Active Hardware Mode Pill -->
+        <div id="demoBadge" class="badge badge-demo hidden">DEMO SIMULATION ACTIVE</div>
+        <div id="systemStateBadge" class="badge badge-disconnected">
+          <span class="status-dot"></span>
+          <span id="systemStateText">NOT CONNECTED</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Communication Mode Switcher & Configuration -->
+    <section class="card communication-section">
+      <div class="section-top">
+        <div class="section-title-wrap">
+          <h2 class="section-title">
+            <svg class="icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M4 11a9 9 0 0 1 9 9"></path>
+              <path d="M4 4a16 16 0 0 1 16 16"></path>
+              <circle cx="5" cy="19" r="1"></circle>
+            </svg>
+            Communication Mode Setup
+          </h2>
+          <span class="mode-help-text">Select one active communication mode below to stream real-time telemetry and control the trolley.</span>
+        </div>
+      </div>
+
+      <div class="mode-tabs">
+        <button id="tabUsbBtn" class="tab-btn active" onclick="switchModeTab('USB')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M8 5l4-3 4 3M8 19l4 3 4-3"></path></svg>
+          USB Serial Mode
+        </button>
+        <button id="tabWifiBtn" class="tab-btn" onclick="switchModeTab('WIFI')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.55a11 11 0 0 1 14.08 0M1.42 9a16 16 0 0 1 21.16 0M8.53 16.11a6 6 0 0 1 6.95 0M12 20h.01"></path></svg>
+          Wi-Fi IP Mode
+        </button>
+        <button id="tabDemoBtn" class="tab-btn" onclick="switchModeTab('DEMO')">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polygon points="10 8 16 12 10 16 10 8"></polygon></svg>
+          Hardware Demo Mode
+        </button>
+      </div>
+
+      <!-- USB Config Panel: Provides BOTH Direct Browser Web Serial & Node.js Server COM Port -->
+      <div id="panelUsb" class="mode-panel active">
+        <div class="usb-mode-dual-grid">
+          <!-- Option 1: Direct Web Serial (Browser Native) -->
+          <div class="sub-mode-card" id="webSerialSubCard">
+            <div class="sub-card-header">
+              <div class="sub-card-badge">DIRECT CHROME / EDGE</div>
+              <h3 class="sub-card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16" rx="2"></rect><rect x="9" y="9" width="6" height="6"></rect><line x1="9" y1="1" x2="9" y2="4"></line><line x1="15" y1="1" x2="15" y2="4"></line><line x1="9" y1="20" x2="9" y2="23"></line><line x1="15" y1="20" x2="15" y2="23"></line><line x1="20" y1="9" x2="23" y2="9"></line><line x1="20" y1="14" x2="23" y2="14"></line><line x1="1" y1="9" x2="4" y2="9"></line><line x1="1" y1="14" x2="4" y2="14"></line></svg>
+                Direct Browser Web Serial
+              </h3>
+              <p class="sub-card-desc">Connect directly to ESP32 via Chrome/Edge USB. No background Node server required.</p>
+            </div>
+            <div class="sub-card-body">
+              <div class="action-buttons-inline">
+                <button id="btnConnectWebSerial" class="btn btn-primary">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path></svg>
+                  Connect ESP32 (Web Serial)
+                </button>
+                <button id="btnDisconnectWebSerial" class="btn btn-outline" disabled>
+                  Disconnect
+                </button>
+              </div>
+              <div class="sub-card-status" id="webSerialStatusNote">Status: Ready. Connect ESP32 cable and click above.</div>
+            </div>
+          </div>
+
+          <!-- Option 2: Node.js Backend Server COM Port -->
+          <div class="sub-mode-card" id="serverSerialSubCard">
+            <div class="sub-card-header">
+              <div class="sub-card-badge sub-badge-secondary">NODE.JS SERVER (PORT 3000)</div>
+              <h3 class="sub-card-title">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="2" width="20" height="8" rx="2" ry="2"></rect><rect x="2" y="14" width="20" height="8" rx="2" ry="2"></rect><line x1="6" y1="6" x2="6.01" y2="6"></line><line x1="6" y1="18" x2="6.01" y2="18"></line></svg>
+                Server COM Port Bridge
+              </h3>
+              <p class="sub-card-desc">Streams serial communication through the local Express backend on port 3000.</p>
+            </div>
+            <div class="sub-card-body">
+              <div class="server-serial-grid">
+                <div class="form-field form-field-port">
+                  <label for="comPortSelect">COM Port</label>
+                  <div class="input-with-button">
+                    <select id="comPortSelect" class="input-control select-port">
+                      <option value="">Scanning ports...</option>
+                    </select>
+                    <button id="btnScanPorts" class="btn btn-secondary btn-sm" title="Refresh available COM ports">
+                      Scan
+                    </button>
+                  </div>
+                </div>
+
+                <div class="form-field form-field-baud">
+                  <label for="baudRateSelect">Baud Rate</label>
+                  <select id="baudRateSelect" class="input-control select-baud">
+                    <option value="115200" selected>115200 (Default)</option>
+                    <option value="9600">9600</option>
+                    <option value="57600">57600</option>
+                  </select>
+                </div>
+
+                <div class="form-actions-inline form-field-actions">
+                  <button id="btnConnectUsb" class="btn btn-primary">Connect</button>
+                  <button id="btnDisconnectUsb" class="btn btn-outline" disabled>Disconnect</button>
+                </div>
+              </div>
+              <div class="sub-card-status" id="usbStatusNote">Status: Not connected over Server USB. Close Arduino Serial Monitor before connecting.</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Wi-Fi Config Panel -->
+      <div id="panelWifi" class="mode-panel">
+        <div class="wifi-config-grid">
+          <div class="form-field flex-2">
+            <label for="espIpInput">ESP32 Device IP Address</label>
+            <input type="text" id="espIpInput" class="input-control" placeholder="e.g. 10.82.67.238 or 192.168.1.105" spellcheck="false" autocomplete="off">
+          </div>
+
+          <div class="form-actions-inline align-self-end">
+            <button id="btnConnectWifi" class="btn btn-primary">Connect IP</button>
+            <button id="btnDisconnectWifi" class="btn btn-outline" disabled>Disconnect</button>
+          </div>
+        </div>
+        <div class="panel-status-note" id="wifiStatusNote">
+          Status: Wi-Fi mode inactive. Enter the ESP32 IP address shown in the Arduino Serial Monitor upon boot.
+        </div>
+      </div>
+
+      <!-- Demo Simulation Panel -->
+      <div id="panelDemo" class="mode-panel">
+        <div class="demo-panel-card">
+          <div class="demo-info">
+            <h3 class="demo-title">Interactive Hardware-Free Simulation</h3>
+            <p class="demo-desc">Test telemetry updates, trolley motor commands, gate valve actuation, and safety interlocks right away in your browser without physical hardware connected.</p>
+          </div>
+          <div class="demo-actions">
+            <button id="btnToggleDemo" class="btn btn-accent">Start Demo Simulation</button>
+            <button id="btnInjectObstacle" class="btn btn-outline" disabled>Simulate Obstacle (Test Interlock)</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Command Status Alert Banner -->
+    <div id="commandAlert" class="alert-banner hidden">
+      <div class="alert-content">
+        <span class="alert-icon-wrap" id="commandAlertIcon">ℹ️</span>
+        <span id="commandAlertText">Command acknowledged</span>
+      </div>
+      <button class="alert-close" onclick="closeAlert()" aria-label="Close notification">&times;</button>
+    </div>
+
+    <!-- 8 Main Telemetry Information Cards (Uniform Height & Structured Grid) -->
+    <section class="metrics-grid">
+      <!-- 1. Current Feed Weight -->
+      <div class="metric-card" id="cardWeight">
+        <div class="metric-header">
+          <span class="metric-label">Current Feed Weight</span>
+          <span class="metric-icon-box">⚖️</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-value-container">
+            <span class="metric-value" id="valFeedWeight">0.0</span>
+            <span class="metric-unit">grams</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <div class="progress-bar-bg">
+            <div id="weightProgressBar" class="progress-bar-fill" style="width: 0%;"></div>
+          </div>
+          <div class="metric-subtext" id="weightCapacityText">Capacity: 5000g (HX711 ADC)</div>
+        </div>
+      </div>
+
+      <!-- 2. Estimated Feed Dispensed -->
+      <div class="metric-card" id="cardDispensed">
+        <div class="metric-header">
+          <span class="metric-label">Estimated Feed Dispensed</span>
+          <span class="metric-icon-box">🥣</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-value-container">
+            <span class="metric-value" id="valFeedDispensed">0.0</span>
+            <span class="metric-unit">grams</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <div class="metric-subtext">Dispensed since last hopper tare / fill</div>
+        </div>
+      </div>
+
+      <!-- 3. Trolley Status -->
+      <div class="metric-card" id="cardTrolley">
+        <div class="metric-header">
+          <span class="metric-label">Trolley Status</span>
+          <span class="metric-icon-box">🚜</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-status-badge status-stopped" id="badgeTrolley">
+            <span class="indicator-pulse"></span>
+            <span id="valTrolleyStatus">STOPPED</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="trolleyMotorSubtext">L298N Drive: Idle / Off</span>
+        </div>
+      </div>
+
+      <!-- 4. Feed Gate Status -->
+      <div class="metric-card" id="cardGate">
+        <div class="metric-header">
+          <span class="metric-label">Feed Gate Status</span>
+          <span class="metric-icon-box">🚪</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-status-badge status-closed" id="badgeGate">
+            <span class="indicator-pulse"></span>
+            <span id="valGateStatus">CLOSED</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="gateServoSubtext">Servo Position: 0° (Shut)</span>
+        </div>
+      </div>
+
+      <!-- 5. Obstacle Status -->
+      <div class="metric-card" id="cardObstacle">
+        <div class="metric-header">
+          <span class="metric-label">Obstacle Status</span>
+          <span class="metric-icon-box">🚨</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-status-badge status-clear" id="badgeObstacle">
+            <span class="indicator-pulse"></span>
+            <span id="valObstacleStatus">CLEAR</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="valObstacleDistance">Distance: -- cm (Safe)</span>
+        </div>
+      </div>
+
+      <!-- 6. Feed Availability -->
+      <div class="metric-card" id="cardFeedAvail">
+        <div class="metric-header">
+          <span class="metric-label">Feed Availability</span>
+          <span class="metric-icon-box">🌾</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-status-badge status-available" id="badgeFeedAvail">
+            <span class="indicator-pulse"></span>
+            <span id="valFeedStatus">AVAILABLE</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="feedThresholdSubtext">Threshold: &gt; 500g</span>
+        </div>
+      </div>
+
+      <!-- 7. ESP32 Connection -->
+      <div class="metric-card" id="cardConnection">
+        <div class="metric-header">
+          <span class="metric-label">ESP32 Connection</span>
+          <span class="metric-icon-box">📡</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-status-badge status-disconnected" id="badgeConnection">
+            <span class="indicator-pulse"></span>
+            <span id="valEspConnection">DISCONNECTED</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="connectionModeSubtext">Active Mode: None</span>
+        </div>
+      </div>
+
+      <!-- 8. Last Data Update -->
+      <div class="metric-card" id="cardLastUpdate">
+        <div class="metric-header">
+          <span class="metric-label">Last Data Update</span>
+          <span class="metric-icon-box">⏱️</span>
+        </div>
+        <div class="metric-body">
+          <div class="metric-value-container">
+            <span class="metric-value-small" id="valLastUpdate">--:--:--</span>
+          </div>
+        </div>
+        <div class="metric-footer">
+          <span class="metric-subtext" id="valTimeAgo">Waiting for telemetry...</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Trolley Actuator & Hardware Controls (Clean Multi-Card Control Grid) -->
+    <section class="card controls-section">
+      <div class="section-top">
+        <div class="section-title-wrap">
+          <h2 class="section-title">
+            <svg class="icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+            Trolley Actuator &amp; Hardware Controls
+          </h2>
+          <span class="mode-help-text">Real-time bi-directional commands validated by ESP32 firmware and obstacle collision interlocks.</span>
+        </div>
+      </div>
+
+      <!-- 4 Organized Control Cards -->
+      <div class="control-cards-grid">
+        <!-- Control Card 1: Trolley Drive Motors -->
+        <div class="control-card">
+          <div class="control-card-header">
+            <div class="control-card-title">
+              <span class="control-icon">🚜</span>
+              <span>Trolley Drive Movement</span>
+            </div>
+            <span class="control-badge" id="ctrlTrolleyStateBadge">L298N &bull; STOPPED</span>
+          </div>
+          <p class="control-card-desc">Commands dual DC gear motors to move forward along the feeding track.</p>
+          <div class="control-card-actions">
+            <button id="btnStartTrolley" class="btn btn-success" onclick="sendCommand('START')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+              Start Trolley
+            </button>
+            <button id="btnStopTrolley" class="btn btn-warning" onclick="sendCommand('STOP')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="6" y="6" width="12" height="12"></rect></svg>
+              Stop Trolley
+            </button>
+          </div>
+        </div>
+
+        <!-- Control Card 2: Feed Gate Valve -->
+        <div class="control-card">
+          <div class="control-card-header">
+            <div class="control-card-title">
+              <span class="control-icon">🚪</span>
+              <span>Hopper Feed Gate Valve</span>
+            </div>
+            <span class="control-badge" id="ctrlGateStateBadge">SERVO &bull; CLOSED</span>
+          </div>
+          <p class="control-card-desc">Actuates the micro servo (GPIO 13) to dispense grain into feeder troughs.</p>
+          <div class="control-card-actions">
+            <button id="btnOpenGate" class="btn btn-info" onclick="sendCommand('OPEN_GATE')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 15l-6-6-6 6"/></svg>
+              Open Feed Gate
+            </button>
+            <button id="btnCloseGate" class="btn btn-secondary" onclick="sendCommand('CLOSE_GATE')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 9l6 6 6-6"/></svg>
+              Close Feed Gate
+            </button>
+          </div>
+        </div>
+
+        <!-- Control Card 3: Calibration & Diagnostics -->
+        <div class="control-card">
+          <div class="control-card-header">
+            <div class="control-card-title">
+              <span class="control-icon">⚖️</span>
+              <span>Scale &amp; Telemetry Tools</span>
+            </div>
+            <span class="control-badge">HX711 SCALE</span>
+          </div>
+          <p class="control-card-desc">Zero tare load cell baseline or set hopper refill weight for dispense tracking.</p>
+          <div class="control-card-actions">
+            <button id="btnTareScale" class="btn btn-purple" onclick="sendCommand('TARE')" title="Zero the HX711 scale weight baseline">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v18M3 9l9-6 9 6M3 9l3 7h12l3-7"/></svg>
+              Zero / Tare Scale
+            </button>
+            <button id="btnSetInitial" class="btn btn-outline" onclick="promptSetWeight()" title="Set hopper full weight baseline">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+              Refill / Tare Hopper
+            </button>
+          </div>
+        </div>
+
+        <!-- Control Card 4: Emergency Stop Safety -->
+        <div class="control-card emergency-card">
+          <div class="control-card-header">
+            <div class="control-card-title">
+              <span class="control-icon">🛑</span>
+              <span>Emergency Safety Stop</span>
+            </div>
+            <span class="control-badge badge-estop">PRIORITY HALT</span>
+          </div>
+          <p class="control-card-desc">Immediately cuts motor drive PWM and locks the feed gate shut.</p>
+          <div class="control-card-actions">
+            <button id="btnEmergencyStop" class="btn btn-danger btn-block btn-lg" onclick="sendCommand('EMERGENCY_STOP')">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><circle cx="12" cy="12" r="10"></circle><line x1="12" y1="8" x2="12" y2="12"></line><line x1="12" y1="16" x2="12.01" y2="16"></line></svg>
+              EMERGENCY STOP (HALT ALL)
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Safety Interlock Notice -->
+      <div class="safety-advisory">
+        <svg class="advisory-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+          <line x1="12" y1="9" x2="12" y2="13"></line>
+          <line x1="12" y1="17" x2="12.01" y2="17"></line>
+        </svg>
+        <div class="advisory-text">
+          <strong>AUTONOMOUS SAFETY INTERLOCK NOTICE:</strong>
+          Trolley start is protected against collision if an obstacle is within <strong>25 cm</strong> ahead. If an obstacle appears while the trolley is moving, it halts autonomously. Trolley can move even when empty to allow returning to the loading silo.
+        </div>
+      </div>
+    </section>
+
+    <!-- Bottom Data Split: Live Sensor Readings Table & In-Memory Event Log -->
+    <div class="data-split-container">
+      <!-- Live Sensor Data Table -->
+      <section class="card data-table-section">
+        <div class="section-top">
+          <div class="section-title-wrap">
+            <h2 class="section-title">
+              <svg class="icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="3" y1="9" x2="21" y2="9"></line><line x1="9" y1="21" x2="9" y2="9"></line></svg>
+              Live Sensor Telemetry
+            </h2>
+          </div>
+          <span class="badge badge-subtle" id="telemetryRateBadge">1.0 Hz Polling</span>
+        </div>
+
+        <div class="table-responsive">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>Parameter</th>
+                <th>Hardware Device</th>
+                <th>Current Value</th>
+                <th>Condition</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><strong>Feed Weight</strong></td>
+                <td>HX711 24-bit ADC</td>
+                <td id="tblWeight" class="mono-value">0.0 g</td>
+                <td><span id="tblWeightStatus" class="chip chip-neutral">Baseline</span></td>
+              </tr>
+              <tr>
+                <td><strong>Feed Dispensed</strong></td>
+                <td>Differential Tracking</td>
+                <td id="tblDispensed" class="mono-value">0.0 g</td>
+                <td><span class="chip chip-info">Tracked</span></td>
+              </tr>
+              <tr>
+                <td><strong>Obstacle Distance</strong></td>
+                <td>HC-SR04 Ultrasonic</td>
+                <td id="tblDistance" class="mono-value">-- cm</td>
+                <td><span id="tblDistanceStatus" class="chip chip-success">Safe Distance</span></td>
+              </tr>
+              <tr>
+                <td><strong>Trolley Motors</strong></td>
+                <td>L298N Dual H-Bridge</td>
+                <td id="tblTrolley" class="mono-value">STOPPED</td>
+                <td><span id="tblTrolleyStatus" class="chip chip-neutral">Idle</span></td>
+              </tr>
+              <tr>
+                <td><strong>Gate Actuator</strong></td>
+                <td>Micro Servo (GPIO 13)</td>
+                <td id="tblGate" class="mono-value">CLOSED</td>
+                <td><span id="tblGateStatus" class="chip chip-neutral">0 Degrees</span></td>
+              </tr>
+              <tr>
+                <td><strong>Active Mode</strong></td>
+                <td>USB / Web Serial / Wi-Fi</td>
+                <td id="tblMode" class="mono-value">None</td>
+                <td><span id="tblModeStatus" class="chip chip-warning">Awaiting Connect</span></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- In-Memory Activity & Safety Event Log -->
+      <section class="card event-log-section">
+        <div class="section-top">
+          <div class="section-title-wrap">
+            <h2 class="section-title">
+              <svg class="icon-inline" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline></svg>
+              Recent Activity &amp; Safety Events
+            </h2>
+          </div>
+          <div class="event-log-controls">
+            <button class="btn btn-xs btn-outline" onclick="clearEventLogs()">Clear</button>
+            <span class="memory-indicator" title="Held in memory only. No external database used.">RAM Log</span>
+          </div>
+        </div>
+
+        <div class="log-stream-container" id="logStreamContainer">
+          <div class="log-placeholder">No activity logged yet. Connect to hardware or enable Demo Mode.</div>
+        </div>
+      </section>
+    </div>
+
+    <!-- Footer -->
+    <footer class="main-footer">
+      <div class="footer-content">
+        <p><strong>College Project:</strong> IoT-Based Poultry Feed Trolley Monitoring System Using ESP32</p>
+        <p class="footer-secondary">
+          No external database required &bull; Telemetry maintained in runtime memory &bull; Built with Node.js, Express &amp; ESP32
+        </p>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
