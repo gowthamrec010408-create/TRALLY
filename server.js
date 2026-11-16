@@ -583,6 +583,16 @@ app.post('/api/command', async (req, res) => {
       addLog('COMMAND', 'Trolley stopped (DEMO)');
       return res.json({ success: true, message: 'Trolley stopped.', data: state.data });
     }
+    else if (cmd === 'FORWARD') {
+      state.data.trolleyStatus = 'FORWARD';
+      addLog('COMMAND', 'Trolley moving FORWARD (DEMO)');
+      return res.json({ success: true, message: 'Trolley moving forward.', data: state.data });
+    }
+    else if (cmd === 'REVERSE') {
+      state.data.trolleyStatus = 'REVERSE';
+      addLog('COMMAND', 'Trolley moving REVERSE (DEMO)');
+      return res.json({ success: true, message: 'Trolley moving reverse.', data: state.data });
+    }
     else if (cmd === 'OPEN_GATE') {
       state.data.gateStatus = 'OPEN';
       addLog('COMMAND', 'Feed dispensing gate OPENED (DEMO)');

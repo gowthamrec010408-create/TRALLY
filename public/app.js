@@ -912,12 +912,19 @@ function renderDashboard(state) {
   const trolleySub = document.getElementById('trolleyMotorSubtext');
   const ctrlTrolleyBadge = document.getElementById('ctrlTrolleyStateBadge');
 
-  if (trolleyVal === 'MOVING') {
+  if (trolleyVal === 'MOVING' || trolleyVal === 'FORWARD') {
     badgeTrolley.className = 'metric-status-badge status-moving';
-    trolleySub.textContent = 'L298N Drive: FORWARD (200 PWM)';
+    trolleySub.textContent = 'L298N Drive: FORWARD';
     if (ctrlTrolleyBadge) {
-      ctrlTrolleyBadge.textContent = 'L298N • MOVING FORWARD';
+      ctrlTrolleyBadge.textContent = 'L298N • FORWARD';
       ctrlTrolleyBadge.style.color = '#34d399';
+    }
+  } else if (trolleyVal === 'REVERSE') {
+    badgeTrolley.className = 'metric-status-badge status-reverse';
+    trolleySub.textContent = 'L298N Drive: REVERSE';
+    if (ctrlTrolleyBadge) {
+      ctrlTrolleyBadge.textContent = 'L298N • REVERSE';
+      ctrlTrolleyBadge.style.color = '#fbbf24';
     }
   } else {
     badgeTrolley.className = 'metric-status-badge status-stopped';
@@ -1088,7 +1095,7 @@ function updateConnectionPanels(state) {
 
 function updateActuatorButtons(state) {
   const isConnected = state.connected;
-  const isMoving = state.data.trolleyStatus === 'MOVING';
+  const isMoving = state.data.trolleyStatus === 'MOVING' || state.data.trolleyStatus === 'FORWARD' || state.data.trolleyStatus === 'REVERSE';
   const isGateOpen = state.data.gateStatus === 'OPEN';
   const hasObstacle = state.data.obstacleStatus === 'DETECTED';
 

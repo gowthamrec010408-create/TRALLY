@@ -955,6 +955,13 @@ body {
   animation: pulseMoving 1.5s infinite;
 }
 
+.status-reverse {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  border: 1px solid rgba(245, 158, 11, 0.4);
+  animation: pulseMoving 1.5s infinite;
+}
+
 @keyframes pulseMoving {
   0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.3); }
   50% { box-shadow: 0 0 0 6px rgba(16, 185, 129, 0); }

@@ -75,11 +75,17 @@ const char* WIFI_PASSWORD = "78451810";
 // =====================================================================================
 float CALIBRATION_FACTOR = 219.0942; 
 
-// Low feed threshold in grams
-const float LOW_FEED_THRESHOLD_GRAMS = 500.0; 
+// Weight threshold in grams (boundary between high and low weight):
+// - Weight > WEIGHT_THRESHOLD_GRAMS  => HIGH weight => DC motor runs FORWARD
+// - Weight <= WEIGHT_THRESHOLD_GRAMS => LOW weight  => DC motor runs REVERSE
+const float WEIGHT_THRESHOLD_GRAMS = 500.0; 
+const float LOW_FEED_THRESHOLD_GRAMS = WEIGHT_THRESHOLD_GRAMS; 
 
-// Obstacle threshold distance in centimeters
-const float OBSTACLE_THRESHOLD_CM = 25.0; 
+// Distance threshold in centimeters:
+// - Distance < DISTANCE_THRESHOLD_CM  => Servo motor CLOSES (< 25 cm)
+// - Distance >= DISTANCE_THRESHOLD_CM => Servo motor OPENS  (>= 25 cm)
+const float DISTANCE_THRESHOLD_CM = 25.0; 
+const float OBSTACLE_THRESHOLD_CM = DISTANCE_THRESHOLD_CM; 
 
 // Servo angles for feed gate valve
 const int GATE_CLOSED_ANGLE = 0;   // 0 degrees = Closed shut
@@ -104,13 +110,19 @@ float feedDispensed     = 0.0;     // Grams dispensed since start
 float obstacleDistance  = 100.0;   // Measured distance in cm
 int   obstacleDebounceCount = 0;   // Noise rejection filter
 
-String trolleyStatus  = "STOPPED";   // "MOVING" or "STOPPED"
+String trolleyStatus  = "STOPPED";   // "FORWARD", "REVERSE", or "STOPPED"
 String gateStatus     = "CLOSED";    // "OPEN" or "CLOSED"
 String obstacleStatus = "CLEAR";     // "CLEAR" or "DETECTED"
 String feedStatus     = "AVAILABLE"; // "AVAILABLE" or "LOW"
 
+// Autonomous control logic state (active by default)
+bool autoControlEnabled = true;
+
 unsigned long lastSerialBroadcast = 0;
 const unsigned long SERIAL_INTERVAL = 1000; // Broadcast every 1 second
+
+unsigned long lastSensorCheck = 0;
+const unsigned long SENSOR_INTERVAL = 200;  // Autonomous logic & sensor refresh (200ms)
 
 // =====================================================================================
 // 5. EXTERNAL DISPLAY FUNCTIONS (Auto-Scanning I2C 16x2 / 20x4 LCD)
@@ -164,7 +176,9 @@ void updateExternalDisplay() {
   // Row 0: Weight & Trolley Status
   char row0[17];
   int wt = (int)round(currentFeedWeight);
-  const char* trStr = (trolleyStatus == "MOVING") ? "RUN" : "STP";
+  const char* trStr = "STP";
+  if (trolleyStatus == "FORWARD" || trolleyStatus == "MOVING") trStr = "FWD";
+  else if (trolleyStatus == "REVERSE") trStr = "REV";
   snprintf(row0, sizeof(row0), "Wt:%4dg Tr:%-3s", wt, trStr);
 
   // Row 1: Obstacle & Gate Status
@@ -172,7 +186,7 @@ void updateExternalDisplay() {
   int dist = (int)round(obstacleDistance);
   if (dist > 999) dist = 999;
   const char* gtStr = (gateStatus == "OPEN") ? "OPN" : "CLS";
-  snprintf(row1, sizeof(row1), "Obs:%3dcm Gt:%-3s", dist, gtStr);
+  snprintf(row1, sizeof(row1), "Dist:%3dcm Gt:%-3s", dist, gtStr);
 
   lcd->setCursor(0, 0);
   lcd->print(row0);
@@ -196,15 +210,6 @@ void initMotors() {
 }
 
 void moveTrolleyForward() {
-  // Safety Interlock Check
-  if (obstacleStatus == "DETECTED") {
-    Serial.println("{\"error\":\"Safety Interlock: Cannot start trolley! Obstacle detected ahead within 25 cm.\"}");
-    return;
-  }
-  if (feedStatus == "LOW") {
-    Serial.println("{\"warning\":\"Notice: Trolley moving with low feed hopper level.\"}");
-  }
-
   // Motor A Forward (Full drive torque)
   digitalWrite(PIN_IN1, HIGH);
   digitalWrite(PIN_IN2, LOW);
@@ -215,9 +220,27 @@ void moveTrolleyForward() {
   digitalWrite(PIN_IN4, LOW);
   digitalWrite(PIN_ENB, HIGH);
 
-  trolleyStatus = "MOVING";
+  trolleyStatus = "FORWARD";
   digitalWrite(PIN_LED, HIGH);
-  Serial.println("{\"event\":\"TROLLEY_STARTED\",\"trolleyStatus\":\"MOVING\"}");
+  Serial.println("{\"event\":\"TROLLEY_FORWARD\",\"trolleyStatus\":\"FORWARD\"}");
+
+  updateExternalDisplay();
+}
+
+void moveTrolleyReverse() {
+  // Motor A Reverse (Full drive torque)
+  digitalWrite(PIN_IN1, LOW);
+  digitalWrite(PIN_IN2, HIGH);
+  digitalWrite(PIN_ENA, HIGH);
+
+  // Motor B Reverse (Full drive torque)
+  digitalWrite(PIN_IN3, LOW);
+  digitalWrite(PIN_IN4, HIGH);
+  digitalWrite(PIN_ENB, HIGH);
+
+  trolleyStatus = "REVERSE";
+  digitalWrite(PIN_LED, HIGH);
+  Serial.println("{\"event\":\"TROLLEY_REVERSE\",\"trolleyStatus\":\"REVERSE\"}");
 
   updateExternalDisplay();
 }
@@ -241,6 +264,7 @@ void stopTrolley() {
 }
 
 void openFeedGate() {
+  if (gateStatus == "OPEN") return; // Already open, no-op
   if (!feedServo.attached()) {
     feedServo.attach(PIN_SERVO, 500, 2400);
   }
@@ -257,6 +281,7 @@ void openFeedGate() {
 }
 
 void closeFeedGate() {
+  if (gateStatus == "CLOSED") return; // Already closed, no-op
   if (!feedServo.attached()) {
     feedServo.attach(PIN_SERVO, 500, 2400);
   }
@@ -273,6 +298,7 @@ void closeFeedGate() {
 }
 
 void emergencyStop() {
+  autoControlEnabled = false; // Halt autonomous control
   stopTrolley();
   closeFeedGate();
   Serial.println("{\"event\":\"EMERGENCY_STOP_TRIGGERED\",\"status\":\"HALTED\"}");
@@ -282,6 +308,42 @@ void emergencyStop() {
     lcd->print("EMERGENCY STOP!");
     lcd->setCursor(0, 1);
     lcd->print("ALL MOTORS HALT");
+  }
+}
+
+// =====================================================================================
+// 6B. AUTONOMOUS CONTROL LOGIC:
+// 1. When distance is less than 25cm  -> servo motor will close condition.
+// 2. When distance is greater than 25cm -> servo motor will open condition.
+// 3. When weight is high -> DC motor will run forward.
+// 4. When weight is low  -> DC motor will run reverse.
+// =====================================================================================
+
+void applyControlLogic() {
+  // 1 & 2. Distance-based Servo Gate Control:
+  if (obstacleDistance > 0 && obstacleDistance < DISTANCE_THRESHOLD_CM) {
+    // Condition 1: Distance < 25cm -> Servo motor closes
+    if (gateStatus != "CLOSED") {
+      closeFeedGate();
+    }
+  } else if (obstacleDistance >= DISTANCE_THRESHOLD_CM) {
+    // Condition 2: Distance >= 25cm -> Servo motor opens
+    if (gateStatus != "OPEN") {
+      openFeedGate();
+    }
+  }
+
+  // 3 & 4. Weight-based DC Motor Trolley Control:
+  if (currentFeedWeight > WEIGHT_THRESHOLD_GRAMS) {
+    // Condition 3: Weight is high -> DC motor runs FORWARD
+    if (trolleyStatus != "FORWARD") {
+      moveTrolleyForward();
+    }
+  } else {
+    // Condition 4: Weight is low -> DC motor runs REVERSE
+    if (trolleyStatus != "REVERSE") {
+      moveTrolleyReverse();
+    }
   }
 }
 
@@ -308,32 +370,26 @@ float readUltrasonicDistance() {
 }
 
 void updateSensors() {
-  // 1. Read Obstacle Sensor with 2-sample debounce noise filter
+  // 1. Read Distance Sensor with noise rejection
   float measuredDist = readUltrasonicDistance();
   
-  if (measuredDist > 2.0 && measuredDist <= OBSTACLE_THRESHOLD_CM) {
-    obstacleDebounceCount++;
-    if (obstacleDebounceCount >= 2) { // Confirmed after 2 consecutive reads
-      obstacleStatus = "DETECTED";
-      obstacleDistance = measuredDist;
+  if (measuredDist > 2.0 && measuredDist < 450.0) {
+    obstacleDistance = measuredDist;
+  }
 
-      // Immediate Autonomous Safety Stop if obstacle encountered while moving
-      if (trolleyStatus == "MOVING") {
-        stopTrolley();
-        Serial.println("{\"warning\":\"Obstacle detected ahead! Trolley stopped autonomously.\"}");
-      }
+  if (obstacleDistance <= DISTANCE_THRESHOLD_CM) {
+    obstacleDebounceCount++;
+    if (obstacleDebounceCount >= 2) {
+      obstacleStatus = "DETECTED";
     }
   } else {
     obstacleDebounceCount = 0;
     obstacleStatus = "CLEAR";
-    if (measuredDist > 2.0 && measuredDist < 450.0) {
-      obstacleDistance = measuredDist;
-    }
   }
 
   // 2. Read Load Cell Feed Weight
-  if (scale.is_ready() || scale.wait_ready_timeout(80)) {
-    float reading = scale.get_units(3); // Average of 3 readings
+  if (scale.is_ready() || scale.wait_ready_timeout(50)) {
+    float reading = scale.get_units(2); // Average of 2 readings for quick response
     
     // Auto-correct for reversed load cell wiring or inverted calibration
     if (reading < -1.0) {
@@ -350,8 +406,8 @@ void updateSensors() {
       feedDispensed = 0.0;
     }
 
-    // Check feed availability status (sets alert warning, but never forces manual gate shut!)
-    if (currentFeedWeight <= LOW_FEED_THRESHOLD_GRAMS) {
+    // Check feed availability status
+    if (currentFeedWeight <= WEIGHT_THRESHOLD_GRAMS) {
       feedStatus = "LOW";
     } else {
       feedStatus = "AVAILABLE";
@@ -387,20 +443,28 @@ bool processCommand(String cmd, String &replyMessage) {
   cmd.trim();
   cmd.toUpperCase();
 
-  if (cmd == "START" || cmd == "START_TROLLEY") {
-    if (obstacleStatus == "DETECTED") {
-      replyMessage = "Cannot start trolley: Obstacle detected ahead.";
-      return false;
-    }
-    moveTrolleyForward();
-    replyMessage = (feedStatus == "LOW") 
-      ? "Trolley started moving forward (Hopper feed is low)."
-      : "Trolley started moving forward.";
+  if (cmd == "START" || cmd == "START_TROLLEY" || cmd == "AUTO" || cmd == "AUTO_ON") {
+    autoControlEnabled = true;
+    applyControlLogic();
+    replyMessage = "Automatic logic enabled: Forward/Reverse based on weight, Gate based on distance.";
     return true;
   }
-  else if (cmd == "STOP" || cmd == "STOP_TROLLEY") {
+  else if (cmd == "STOP" || cmd == "STOP_TROLLEY" || cmd == "AUTO_OFF") {
+    autoControlEnabled = false;
     stopTrolley();
-    replyMessage = "Trolley stopped.";
+    replyMessage = "Trolley stopped. Automatic logic paused.";
+    return true;
+  }
+  else if (cmd == "FORWARD" || cmd == "MOVE_FORWARD") {
+    autoControlEnabled = false;
+    moveTrolleyForward();
+    replyMessage = "Manual override: Trolley moving FORWARD.";
+    return true;
+  }
+  else if (cmd == "REVERSE" || cmd == "MOVE_REVERSE") {
+    autoControlEnabled = false;
+    moveTrolleyReverse();
+    replyMessage = "Manual override: Trolley moving REVERSE.";
     return true;
   }
   else if (cmd == "OPEN_GATE") {
@@ -655,13 +719,21 @@ void loop() {
   // Check incoming USB Serial / Web Serial commands (instant response)
   checkSerialInput();
 
-  // Periodic sensor updates and JSON broadcast over Serial & External LCD
   unsigned long currentMillis = millis();
+
+  // Fast sensor update & autonomous logic execution (every 200 ms)
+  if (currentMillis - lastSensorCheck >= SENSOR_INTERVAL) {
+    lastSensorCheck = currentMillis;
+    updateSensors();
+
+    if (autoControlEnabled) {
+      applyControlLogic();
+    }
+  }
+
+  // Periodic JSON broadcast over Serial & External LCD update (every 1 second)
   if (currentMillis - lastSerialBroadcast >= SERIAL_INTERVAL) {
     lastSerialBroadcast = currentMillis;
-    
-    // Read hardware sensors
-    updateSensors();
 
     // Broadcast newline-delimited JSON line over Serial
     String jsonOutput = buildStatusJson();
