@@ -109,22 +109,6 @@ function setupEventListeners() {
   if (btnToggleDemo) btnToggleDemo.addEventListener('click', handleToggleDemo);
   const btnInjectObstacle = document.getElementById('btnInjectObstacle');
   if (btnInjectObstacle) btnInjectObstacle.addEventListener('click', handleInjectObstacle);
-
-  // Actuator Hardware Control Buttons (Explicit listeners + inline support)
-  const btnStart = document.getElementById('btnStartTrolley');
-  if (btnStart) btnStart.addEventListener('click', () => sendCommand('START'));
-  const btnStop = document.getElementById('btnStopTrolley');
-  if (btnStop) btnStop.addEventListener('click', () => sendCommand('STOP'));
-  const btnOpen = document.getElementById('btnOpenGate');
-  if (btnOpen) btnOpen.addEventListener('click', () => sendCommand('OPEN_GATE'));
-  const btnClose = document.getElementById('btnCloseGate');
-  if (btnClose) btnClose.addEventListener('click', () => sendCommand('CLOSE_GATE'));
-  const btnTare = document.getElementById('btnTareScale');
-  if (btnTare) btnTare.addEventListener('click', () => sendCommand('TARE'));
-  const btnSetInitial = document.getElementById('btnSetInitial');
-  if (btnSetInitial) btnSetInitial.addEventListener('click', () => promptSetWeight());
-  const btnEstop = document.getElementById('btnEmergencyStop');
-  if (btnEstop) btnEstop.addEventListener('click', () => sendCommand('EMERGENCY_STOP'));
 }
 
 // =====================================================================================
@@ -226,6 +210,13 @@ async function handleConnectWebSerial() {
     webSerialPort = await navigator.serial.requestPort();
     await webSerialPort.open({ baudRate: 115200 });
 
+    // CRITICAL: Set DTR true and RTS false to ensure ESP32 runs code and is not held in bootloader/reset
+    try {
+      await webSerialPort.setSignals({ dataTerminalReady: true, requestToSend: false });
+    } catch (sigErr) {
+      console.warn('[Web Serial setSignals]:', sigErr);
+    }
+
     currentSystemState.mode = 'WEB_SERIAL';
     currentSystemState.connected = true;
     currentSystemState.isDemo = false;
@@ -251,57 +242,70 @@ async function handleConnectWebSerial() {
 
 async function readWebSerialLoop() {
   webSerialKeepReading = true;
-  let textDecoder = new TextDecoderStream();
-  let readableStreamClosed = webSerialPort.readable.pipeTo(textDecoder.writable);
-  let reader = textDecoder.readable.getReader();
-  webSerialReader = reader;
-
+  const decoder = new TextDecoder();
   let lineBuffer = '';
 
   try {
-    while (webSerialKeepReading) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      if (value) {
-        lineBuffer += value;
-        const lines = lineBuffer.split('\n');
-        lineBuffer = lines.pop();
+    while (webSerialKeepReading && webSerialPort && webSerialPort.readable) {
+      const reader = webSerialPort.readable.getReader();
+      webSerialReader = reader;
+      try {
+        while (webSerialKeepReading) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          if (value) {
+            const chunk = decoder.decode(value, { stream: true });
+            lineBuffer += chunk;
+            const lines = lineBuffer.split('\n');
+            lineBuffer = lines.pop(); // keep trailing partial line
 
-        for (const rawLine of lines) {
-          const line = rawLine.trim();
-          if (!line) continue;
+            for (const rawLine of lines) {
+              const line = rawLine.trim();
+              if (!line) continue;
 
-          if (line.startsWith('{') && line.endsWith('}')) {
-            try {
-              const parsed = JSON.parse(line);
+              const jsonStart = line.indexOf('{');
+              const jsonEnd = line.lastIndexOf('}');
+              if (jsonStart >= 0 && jsonEnd > jsonStart) {
+                try {
+                  const parsed = JSON.parse(line.slice(jsonStart, jsonEnd + 1));
 
-              if (parsed.type === 'COMMAND_ACK') {
-                addLocalLog('COMMAND', `ESP32 ACK: ${parsed.status} - ${parsed.message || ''}`);
-                continue;
+                  if (parsed.type === 'COMMAND_ACK') {
+                    addLocalLog('COMMAND', `ESP32 ACK: ${parsed.status} - ${parsed.message || ''}`);
+                    continue;
+                  }
+
+                  if (parsed.warning) addLocalLog('WARNING', parsed.warning);
+                  if (parsed.error) addLocalLog('ERROR', parsed.error);
+
+                  const telemetry = (parsed.data && typeof parsed.data === 'object') ? parsed.data : parsed;
+                  if (telemetry.feedWeight !== undefined || telemetry.obstacleDistance !== undefined) {
+                    updateTelemetryFromHardware(telemetry);
+                  }
+                } catch (jsonErr) {
+                  // Ignore partial/noisy JSON segments
+                }
+              } else {
+                if (line.length > 2 && !line.startsWith('---') && !line.startsWith('===')) {
+                  addLocalLog('ESP32', line);
+                }
               }
-
-              if (parsed.warning) addLocalLog('WARNING', parsed.warning);
-              if (parsed.error) addLocalLog('ERROR', parsed.error);
-
-              if (parsed.feedWeight !== undefined) {
-                updateTelemetryFromHardware(parsed);
-              }
-            } catch (jsonErr) {}
-          } else {
-            if (line.length > 2 && !line.startsWith('---') && !line.startsWith('===')) {
-              addLocalLog('ESP32', line);
             }
           }
         }
+      } catch (innerErr) {
+        if (webSerialKeepReading) {
+          console.warn('[Web Serial Read Iteration Error]:', innerErr);
+        }
+      } finally {
+        reader.releaseLock();
+        webSerialReader = null;
       }
     }
   } catch (err) {
     if (webSerialKeepReading) {
-      console.warn('[Web Serial Read Error]:', err);
-      addLocalLog('ERROR', `Web Serial stream error: ${err.message}`);
+      console.warn('[Web Serial Read Loop Error]:', err);
+      addLocalLog('ERROR', `Web Serial stream: ${err.message}`);
     }
-  } finally {
-    reader.releaseLock();
   }
 }
 
@@ -312,10 +316,6 @@ async function handleDisconnectWebSerial() {
     if (webSerialReader) {
       await webSerialReader.cancel().catch(() => {});
       webSerialReader = null;
-    }
-    if (webSerialWriter) {
-      await webSerialWriter.close().catch(() => {});
-      webSerialWriter = null;
     }
     if (webSerialPort) {
       await webSerialPort.close().catch(() => {});
@@ -337,9 +337,6 @@ async function sendWebSerialCommand(commandName) {
     throw new Error('Web Serial port is not open for writing.');
   }
 
-  // Use TextEncoder directly with getWriter() and releaseLock() in finally.
-  // CRITICAL: Avoid using TextEncoderStream.pipeTo() here, because pipeTo permanently locks
-  // webSerialPort.writable, which caused all subsequent button presses to throw an error!
   const encoder = new TextEncoder();
   const writer = webSerialPort.writable.getWriter();
 
@@ -553,20 +550,38 @@ function startClientDemo() {
   clientDemoInterval = setInterval(() => {
     if (currentSystemState.mode !== 'DEMO') return;
 
-    if (currentSystemState.data.gateStatus === 'OPEN') {
-      const rate = currentSystemState.data.trolleyStatus === 'MOVING' ? 35 : 15;
+    // Apply the 4 operational rules in simulation:
+    // Rule 1 & 2: Distance logic
+    if (currentSystemState.data.obstacleDistance < 25.0) {
+      currentSystemState.data.gateStatus = 'CLOSED';
+      currentSystemState.data.obstacleStatus = 'DETECTED';
+    } else {
+      currentSystemState.data.gateStatus = 'OPEN';
+      currentSystemState.data.obstacleStatus = 'CLEAR';
+    }
+
+    // Rule 3 & 4: Weight logic
+    if (currentSystemState.data.feedWeight > 500) {
+      currentSystemState.data.feedStatus = 'AVAILABLE';
+      if (currentSystemState.data.trolleyStatus !== 'STOPPED') {
+        currentSystemState.data.trolleyStatus = 'FORWARD';
+      }
+    } else {
+      currentSystemState.data.feedStatus = 'LOW';
+      if (currentSystemState.data.trolleyStatus !== 'STOPPED') {
+        currentSystemState.data.trolleyStatus = 'REVERSE';
+      }
+    }
+
+    // Dispense feed if gate is open and trolley is running
+    if (currentSystemState.data.gateStatus === 'OPEN' && currentSystemState.data.trolleyStatus === 'FORWARD') {
+      const rate = 35;
       if (currentSystemState.data.feedWeight > rate) {
         currentSystemState.data.feedWeight -= rate;
         currentSystemState.data.feedDispensed += rate;
       } else {
         currentSystemState.data.feedWeight = 0;
       }
-    }
-
-    if (currentSystemState.data.feedWeight <= 500) {
-      currentSystemState.data.feedStatus = 'LOW';
-    } else {
-      currentSystemState.data.feedStatus = 'AVAILABLE';
     }
 
     if (currentSystemState.data.obstacleStatus === 'CLEAR') {
@@ -611,18 +626,15 @@ async function handleInjectObstacle() {
     if (currentSystemState.data.obstacleStatus === 'CLEAR') {
       currentSystemState.data.obstacleStatus = 'DETECTED';
       currentSystemState.data.obstacleDistance = 12.0;
-      if (currentSystemState.data.trolleyStatus === 'MOVING') {
-        currentSystemState.data.trolleyStatus = 'STOPPED';
-        addLocalLog('DEMO', 'Obstacle detected ahead! Trolley halted autonomously.');
-      } else {
-        addLocalLog('DEMO', 'Simulated obstacle placed at 12 cm.');
-      }
-      showAlert('Simulated obstacle placed ahead! Interlock triggered.', 'error');
+      currentSystemState.data.gateStatus = 'CLOSED';
+      addLocalLog('DEMO', 'Distance 12cm (< 25cm): Servo gate CLOSED per Rule 1.');
+      showAlert('Distance is 12 cm (< 25cm) -> Servo motor gate CLOSED.', 'warning');
     } else {
       currentSystemState.data.obstacleStatus = 'CLEAR';
       currentSystemState.data.obstacleDistance = 85.0;
-      addLocalLog('DEMO', 'Simulated obstacle cleared. Path safe.');
-      showAlert('Simulated obstacle cleared.', 'success');
+      currentSystemState.data.gateStatus = 'OPEN';
+      addLocalLog('DEMO', 'Distance 85cm (> 25cm): Servo gate OPENED per Rule 2.');
+      showAlert('Distance is 85 cm (> 25cm) -> Servo motor gate OPENED.', 'success');
     }
     renderDashboard(currentSystemState);
   }
@@ -632,111 +644,141 @@ async function handleInjectObstacle() {
 // 8. ACTUATOR COMMAND DISPATCH WITH OPTIMISTIC LIVE UPDATES
 // =====================================================================================
 
+let isSendingCommand = false;
+
 async function sendCommand(commandName) {
-  // Obstacle collision safety stop check
-  if (commandName === 'START') {
-    if (currentSystemState.data.obstacleStatus === 'DETECTED') {
-      showAlert('BLOCKED: Cannot start trolley! Obstacle detected ahead within 25 cm.', 'error');
+  if (isSendingCommand) {
+    console.warn(`[Command Guard] Already executing, ignoring rapid trigger: ${commandName}`);
+    return;
+  }
+  isSendingCommand = true;
+
+  try {
+    const cmd = commandName.toUpperCase();
+
+    // 1. Optimistic UI update immediately on click (eliminates lag!)
+    if (cmd === 'START' || cmd === 'START_TROLLEY') {
+      currentSystemState.data.trolleyStatus = 'FORWARD';
+      document.getElementById('valTrolleyStatus').textContent = 'FORWARD';
+      document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • AUTO (4 RULES)';
+      document.getElementById('ctrlTrolleyStateBadge').style.color = '#34d399';
+    } else if (cmd === 'FORWARD') {
+      currentSystemState.data.trolleyStatus = 'FORWARD';
+      document.getElementById('valTrolleyStatus').textContent = 'FORWARD';
+      document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • FORWARD';
+      document.getElementById('ctrlTrolleyStateBadge').style.color = '#34d399';
+    } else if (cmd === 'REVERSE') {
+      currentSystemState.data.trolleyStatus = 'REVERSE';
+      document.getElementById('valTrolleyStatus').textContent = 'REVERSE';
+      document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • REVERSE';
+      document.getElementById('ctrlTrolleyStateBadge').style.color = '#fbbf24';
+    } else if (cmd === 'STOP' || cmd === 'STOP_TROLLEY') {
+      currentSystemState.data.trolleyStatus = 'STOPPED';
+      document.getElementById('valTrolleyStatus').textContent = 'STOPPED';
+      document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • STOPPED';
+      document.getElementById('ctrlTrolleyStateBadge').style.color = 'var(--text-secondary)';
+    } else if (cmd === 'OPEN_GATE') {
+      currentSystemState.data.gateStatus = 'OPEN';
+      document.getElementById('valGateStatus').textContent = 'OPEN';
+      document.getElementById('ctrlGateStateBadge').textContent = 'SERVO • 90° (OPEN)';
+      document.getElementById('ctrlGateStateBadge').style.color = '#22d3ee';
+    } else if (cmd === 'CLOSE_GATE') {
+      currentSystemState.data.gateStatus = 'CLOSED';
+      document.getElementById('valGateStatus').textContent = 'CLOSED';
+      document.getElementById('ctrlGateStateBadge').textContent = 'SERVO • 0° (CLOSED)';
+      document.getElementById('ctrlGateStateBadge').style.color = 'var(--text-secondary)';
+    } else if (cmd === 'EMERGENCY_STOP') {
+      currentSystemState.data.trolleyStatus = 'STOPPED';
+      currentSystemState.data.gateStatus = 'CLOSED';
+      document.getElementById('valTrolleyStatus').textContent = 'STOPPED';
+      document.getElementById('valGateStatus').textContent = 'CLOSED';
+    } else if (cmd === 'TARE') {
+      currentSystemState.data.feedWeight = 0.0;
+      currentSystemState.data.feedDispensed = 0.0;
+      document.getElementById('valFeedWeight').textContent = '0.0';
+      document.getElementById('valFeedDispensed').textContent = '0.0';
+    }
+
+    // Check connection
+    if (currentSystemState.mode === 'NONE' || (!currentSystemState.connected && !isServerOnline)) {
+      showAlert('Notice: Connect via "Connect via Direct Web Serial" or click "Start Demo Simulation" first to control the trolley.', 'warning');
       return;
     }
-  }
 
-  // 1. Optimistic UI update immediately on click (eliminates lag!)
-  if (commandName === 'START') {
-    currentSystemState.data.trolleyStatus = 'MOVING';
-    document.getElementById('valTrolleyStatus').textContent = 'MOVING';
-    document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • MOVING FORWARD';
-    document.getElementById('ctrlTrolleyStateBadge').style.color = '#34d399';
-  } else if (commandName === 'STOP') {
-    currentSystemState.data.trolleyStatus = 'STOPPED';
-    document.getElementById('valTrolleyStatus').textContent = 'STOPPED';
-    document.getElementById('ctrlTrolleyStateBadge').textContent = 'L298N • STOPPED';
-    document.getElementById('ctrlTrolleyStateBadge').style.color = 'var(--text-secondary)';
-  } else if (commandName === 'OPEN_GATE') {
-    currentSystemState.data.gateStatus = 'OPEN';
-    document.getElementById('valGateStatus').textContent = 'OPEN';
-    document.getElementById('ctrlGateStateBadge').textContent = 'SERVO • 90° (OPEN)';
-    document.getElementById('ctrlGateStateBadge').style.color = '#22d3ee';
-  } else if (commandName === 'CLOSE_GATE') {
-    currentSystemState.data.gateStatus = 'CLOSED';
-    document.getElementById('valGateStatus').textContent = 'CLOSED';
-    document.getElementById('ctrlGateStateBadge').textContent = 'SERVO • 0° (CLOSED)';
-    document.getElementById('ctrlGateStateBadge').style.color = 'var(--text-secondary)';
-  } else if (commandName === 'EMERGENCY_STOP') {
-    currentSystemState.data.trolleyStatus = 'STOPPED';
-    currentSystemState.data.gateStatus = 'CLOSED';
-    document.getElementById('valTrolleyStatus').textContent = 'STOPPED';
-    document.getElementById('valGateStatus').textContent = 'CLOSED';
-  } else if (commandName === 'TARE') {
-    currentSystemState.data.feedWeight = 0.0;
-    currentSystemState.data.feedDispensed = 0.0;
-    document.getElementById('valFeedWeight').textContent = '0.0';
-    document.getElementById('valFeedDispensed').textContent = '0.0';
-  }
+    showAlert(`Sending command '${commandName}'...`, 'info');
 
-  showAlert(`Sending command '${commandName}'...`, 'info');
-
-  // Route 1: Direct Web Serial
-  if (currentSystemState.mode === 'WEB_SERIAL') {
-    try {
-      await sendWebSerialCommand(commandName);
-      showAlert(`Command '${commandName}' executed successfully on ESP32.`, 'success');
-    } catch (err) {
-      showAlert(`Web Serial Command Error: ${err.message}`, 'error');
+    // Route 1: Direct Web Serial
+    if (currentSystemState.mode === 'WEB_SERIAL') {
+      try {
+        await sendWebSerialCommand(commandName);
+        showAlert(`Command '${commandName}' executed on ESP32.`, 'success');
+      } catch (err) {
+        showAlert(`Web Serial Command Error: ${err.message}`, 'error');
+      }
+      return;
     }
-    return;
-  }
 
-  // Route 2: Client Demo Simulation
-  if (currentSystemState.mode === 'DEMO' && !isServerOnline) {
-    executeClientDemoCommand(commandName);
-    return;
-  }
+    // Route 2: Client Demo Simulation
+    if (currentSystemState.mode === 'DEMO' && !isServerOnline) {
+      executeClientDemoCommand(commandName);
+      return;
+    }
 
-  // Route 3: Direct Wi-Fi to ESP32 (When Node Server is offline)
-  if (currentSystemState.mode === 'WIFI' && !isServerOnline && currentSystemState.wifiIp) {
+    // Route 3: Direct Wi-Fi to ESP32 (When Node Server is offline)
+    if (currentSystemState.mode === 'WIFI' && !isServerOnline && currentSystemState.wifiIp) {
+      try {
+        const res = await fetch(`http://${currentSystemState.wifiIp}/api/command`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ command: commandName })
+        });
+        const result = await res.json();
+        showAlert(result.message || `Command '${commandName}' executed via ESP32 Wi-Fi.`, 'success');
+      } catch (err) {
+        showAlert(`Direct Wi-Fi Command Error: ${err.message}`, 'error');
+      }
+      return;
+    }
+
+    // Route 4: Node.js Backend Server COM Port Bridge / Wi-Fi
     try {
-      const res = await fetch(`http://${currentSystemState.wifiIp}/api/command`, {
+      const res = await fetch(`${API_BASE}/api/command`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ command: commandName })
       });
+
       const result = await res.json();
-      showAlert(result.message || `Command '${commandName}' executed via ESP32 Wi-Fi.`, 'success');
+      if (!res.ok || result.error) {
+        throw new Error(result.error || 'Command failed on controller');
+      }
+
+      const confirmMsg = result.message || (result.esp32Response && result.esp32Response.message) || `Command '${commandName}' confirmed by ESP32.`;
+      showAlert(confirmMsg, 'success');
+      fetchTelemetry(true);
     } catch (err) {
-      showAlert(`Direct Wi-Fi Command Error: ${err.message}`, 'error');
+      showAlert(`Command Rejected: ${err.message}`, 'error');
+      fetchTelemetry(true);
     }
-    return;
-  }
-
-  // Route 4: Node.js Backend Server COM Port Bridge / Wi-Fi
-  try {
-    const res = await fetch(`${API_BASE}/api/command`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ command: commandName })
-    });
-
-    const result = await res.json();
-    if (!res.ok || result.error) {
-      throw new Error(result.error || 'Command failed on controller');
-    }
-
-    const confirmMsg = result.message || (result.esp32Response && result.esp32Response.message) || `Command '${commandName}' confirmed by ESP32.`;
-    showAlert(confirmMsg, 'success');
-    fetchTelemetry(true);
-  } catch (err) {
-    showAlert(`Command Rejected: ${err.message}`, 'error');
-    fetchTelemetry(true);
+  } finally {
+    setTimeout(() => { isSendingCommand = false; }, 80);
   }
 }
 
 function executeClientDemoCommand(commandName) {
   const cmd = commandName.toUpperCase();
   if (cmd === 'START') {
-    currentSystemState.data.trolleyStatus = 'MOVING';
+    currentSystemState.data.trolleyStatus = 'FORWARD';
+    addLocalLog('COMMAND', 'Auto Mode Started: Running 4 Rules (DEMO)');
+    showAlert('Auto Mode started (4 Rules active).', 'success');
+  } else if (cmd === 'FORWARD') {
+    currentSystemState.data.trolleyStatus = 'FORWARD';
     addLocalLog('COMMAND', 'Trolley started moving forward (DEMO)');
     showAlert('Trolley started moving forward.', 'success');
+  } else if (cmd === 'REVERSE') {
+    currentSystemState.data.trolleyStatus = 'REVERSE';
+    addLocalLog('COMMAND', 'Trolley started moving reverse (DEMO)');
+    showAlert('Trolley started moving reverse.', 'success');
   } else if (cmd === 'STOP') {
     currentSystemState.data.trolleyStatus = 'STOPPED';
     addLocalLog('COMMAND', 'Trolley stopped (DEMO)');
@@ -1097,36 +1139,43 @@ function updateActuatorButtons(state) {
   const isConnected = state.connected;
   const isMoving = state.data.trolleyStatus === 'MOVING' || state.data.trolleyStatus === 'FORWARD' || state.data.trolleyStatus === 'REVERSE';
   const isGateOpen = state.data.gateStatus === 'OPEN';
-  const hasObstacle = state.data.obstacleStatus === 'DETECTED';
 
   const btnStart = document.getElementById('btnStartTrolley');
   const btnStop = document.getElementById('btnStopTrolley');
+  const btnFwd = document.getElementById('btnForwardTrolley');
+  const btnRev = document.getElementById('btnReverseTrolley');
   const btnOpen = document.getElementById('btnOpenGate');
   const btnClose = document.getElementById('btnCloseGate');
   const btnTare = document.getElementById('btnTareScale');
   const btnEstop = document.getElementById('btnEmergencyStop');
 
-  // Trolley Start: Disabled if not connected or obstacle detected
+  // Trolley Auto Start (4 Rules)
   if (btnStart) {
-    btnStart.disabled = !isConnected || hasObstacle;
-    btnStart.title = hasObstacle 
-      ? 'Safety Interlock: Blocked because an obstacle is detected within 25 cm.' 
-      : (isMoving ? 'Trolley is currently moving forward' : 'Start moving trolley forward');
+    btnStart.disabled = !isConnected;
+    btnStart.title = 'Start automatic operation: Forward/Reverse on weight, Gate on distance';
   }
 
-  // Trolley Stop: ALWAYS enabled when connected so the user can immediately cut off motors!
+  // Trolley Stop
   if (btnStop) {
     btnStop.disabled = !isConnected;
-    btnStop.title = 'Immediately cut off trolley drive motors';
+    btnStop.title = 'Stop trolley and pause auto mode';
   }
 
-  // Gate Open: Enabled when connected
+  // Manual Forward / Reverse
+  if (btnFwd) {
+    btnFwd.disabled = !isConnected;
+    btnFwd.title = 'Drive trolley Forward';
+  }
+  if (btnRev) {
+    btnRev.disabled = !isConnected;
+    btnRev.title = 'Drive trolley Reverse';
+  }
+
+  // Gate Open / Close
   if (btnOpen) {
     btnOpen.disabled = !isConnected;
     btnOpen.title = 'Open servo feed gate valve to 90 degrees';
   }
-
-  // Gate Close: ALWAYS enabled when connected so the user can close gate anytime!
   if (btnClose) {
     btnClose.disabled = !isConnected;
     btnClose.title = 'Lock servo feed gate valve shut to 0 degrees';
@@ -1135,6 +1184,7 @@ function updateActuatorButtons(state) {
   // Tare & Emergency Stop
   if (btnTare) {
     btnTare.disabled = !isConnected;
+    btnTare.title = 'Zero load cell reading';
   }
   if (btnEstop) {
     btnEstop.disabled = !isConnected;

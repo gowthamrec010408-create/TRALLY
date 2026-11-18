@@ -1105,14 +1105,15 @@ body {
 
 .control-card-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   width: 100%;
 }
 
 .control-card-actions .btn {
-  flex: 1 1 0;
-  min-width: 0;
+  flex: 1 1 calc(50% - 4px);
+  min-width: 100px;
   padding: 8px 10px;
   font-size: 0.84rem;
   font-weight: 600;

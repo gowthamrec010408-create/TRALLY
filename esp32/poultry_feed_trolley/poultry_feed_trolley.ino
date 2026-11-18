@@ -115,8 +115,8 @@ String gateStatus     = "CLOSED";    // "OPEN" or "CLOSED"
 String obstacleStatus = "CLEAR";     // "CLEAR" or "DETECTED"
 String feedStatus     = "AVAILABLE"; // "AVAILABLE" or "LOW"
 
-// Autonomous control logic state (active by default)
-bool autoControlEnabled = true;
+// Autonomous control logic state (Safe default: Standby until user starts)
+bool autoControlEnabled = false;
 
 unsigned long lastSerialBroadcast = 0;
 const unsigned long SERIAL_INTERVAL = 1000; // Broadcast every 1 second
@@ -387,9 +387,9 @@ void updateSensors() {
     obstacleStatus = "CLEAR";
   }
 
-  // 2. Read Load Cell Feed Weight
-  if (scale.is_ready() || scale.wait_ready_timeout(50)) {
-    float reading = scale.get_units(2); // Average of 2 readings for quick response
+  // 2. Read Load Cell Feed Weight (non-blocking)
+  if (scale.is_ready()) {
+    float reading = scale.get_units(1); // 1 fast sample
     
     // Auto-correct for reversed load cell wiring or inverted calibration
     if (reading < -1.0) {
@@ -428,6 +428,7 @@ String buildStatusJson() {
   doc["obstacleStatus"]    = obstacleStatus;
   doc["feedStatus"]        = feedStatus;
   doc["obstacleDistance"]  = round(obstacleDistance * 10.0) / 10.0;
+  doc["autoMode"]          = autoControlEnabled;
   doc["ipAddress"]         = (WiFi.status() == WL_CONNECTED) ? WiFi.localIP().toString() : "DISCONNECTED";
 
   String output;
@@ -591,6 +592,9 @@ void checkSerialInput() {
         String respStr;
         serializeJson(resp, respStr);
         Serial.println(respStr);
+        
+        // Immediately broadcast updated telemetry JSON for instant UI sync
+        Serial.println(buildStatusJson());
         return;
       }
     }
@@ -599,6 +603,7 @@ void checkSerialInput() {
     String reply;
     bool ok = processCommand(input, reply);
     Serial.println("{\"type\":\"COMMAND_ACK\",\"status\":\"" + String(ok ? "OK" : "REJECTED") + "\",\"message\":\"" + reply + "\"}");
+    Serial.println(buildStatusJson());
   }
 }
 
@@ -651,15 +656,15 @@ void setup() {
     Serial.println("[WARNING] HX711 not detected! Check DOUT (GPIO 19) and SCK (GPIO 18).");
   }
 
-  // Connect to Wi-Fi (Non-blocking with 8-second timeout so USB Serial always runs!)
+  // Connect to Wi-Fi (Non-blocking with 2.5-second timeout so USB Serial always runs fast!)
   Serial.print("[INFO] Connecting to Wi-Fi SSID: ");
   Serial.println(WIFI_SSID);
   WiFi.mode(WIFI_STA);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   unsigned long startAttemptTime = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 8000) {
-    delay(400);
+  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < 2500) {
+    delay(250);
     Serial.print(".");
   }
   Serial.println();
